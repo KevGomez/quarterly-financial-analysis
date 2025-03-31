@@ -14,13 +14,37 @@ from selenium.webdriver.support import expected_conditions as EC
 
 # Define constants for the two permanent company folders
 COMPANY_FOLDERS = {
-    "REXP.N0000": "Company1_Reports",
-    "DIPD.N0000": "Company2_Reports",
+    "REXP.N0000": "REXP_Reports",
+    "DIPD.N0000": "DIPD_Reports",
     # Add any additional company mappings here
 }
 
 # Default folder for any company not in the mapping
 DEFAULT_FOLDER = "Other_Company_Reports"
+
+# Try to import ensure_metadata_file function from parser if it exists
+try:
+    from parser import ensure_metadata_file
+except ImportError:
+    # Define a simplified version if not available
+    def ensure_metadata_file():
+        """Ensure the reports metadata file exists with a valid structure"""
+        metadata_file = "reports_metadata.json"
+        if not os.path.exists(metadata_file):
+            # Create empty structure
+            default_metadata = {}
+            for company_code in COMPANY_FOLDERS:
+                default_metadata[company_code] = {
+                    "available_years": [],
+                    "quarters_by_year": {},
+                    "missing_quarters": {},
+                    "last_updated": datetime.now().isoformat()
+                }
+            try:
+                with open(metadata_file, 'w') as f:
+                    json.dump(default_metadata, f, indent=2)
+            except Exception as e:
+                print(f"Error creating metadata file: {e}")
 
 def download_pdf(pdf_url, folder):
     """
@@ -413,7 +437,7 @@ def scrape_quarterly_reports(company_symbol, folder, valid_years):
             # Submit download tasks
             future_to_url = {
                 executor.submit(download_pdf_parallel, pdf_url, folder): pdf_url 
-                for pdf_url in filtered_pdf_urls if not (os.path.exists(pdf_url))
+                for pdf_url in filtered_pdf_urls
             }
             
             # Process results as they complete
@@ -425,11 +449,6 @@ def scrape_quarterly_reports(company_symbol, folder, valid_years):
                         downloaded_files.append(data["result"])
                 except Exception as exc:
                     print(f"Download for {url} generated an exception: {exc}")
-        
-        # Add any local files that were already available
-        for pdf_url in filtered_pdf_urls:
-            if os.path.exists(pdf_url) and pdf_url not in downloaded_files:
-                downloaded_files.append(pdf_url)
         
         return downloaded_files
         
@@ -498,6 +517,20 @@ def run_quarterly_reports_pipeline(company_symbols, years=None):
                 
             total_downloads += len(downloaded_files)
             all_files[company_symbol] = downloaded_files
+            
+            # After download is completed, scan reports with enhanced detection
+            try:
+                print(f"\nAnalyzing downloaded reports with enhanced quarter detection...")
+                # Import the scan_company_reports function from parser
+                try:
+                    from parser import scan_company_reports
+                    scan_results = scan_company_reports(company_symbol)
+                    print(f"Enhanced report scanning completed with results: {scan_results}")
+                except ImportError:
+                    print("Unable to import scan_company_reports from parser.py. Skipping enhanced quarter detection.")
+            except Exception as e:
+                print(f"Error during enhanced report analysis: {e}")
+                
         else:
             print(f"Pipeline completed for {company_symbol} but no files were downloaded.")
             all_files[company_symbol] = []
@@ -555,11 +588,178 @@ def download_company_reports(company_code, start_date, end_date, progress_callba
     # Download reports
     result = download_reports(company_code, years)
     
+    # Save metadata about downloaded reports
+    if result and 'summary' in result:
+        save_reports_metadata(company_code, result['summary'])
+    
     # Update progress if callback provided
     if progress_callback:
         progress_callback(1.0)
     
     return result
+
+def save_reports_metadata(company_code, summary):
+    """
+    Save metadata about downloaded reports to a JSON file.
+    This will be used by the UI to show available years/quarters.
+    
+    Args:
+        company_code: Company symbol
+        summary: Summary information from the download process
+    """
+    metadata_file = "reports_metadata.json"
+    
+    # Ensure the metadata file exists with valid structure
+    ensure_metadata_file()
+    
+    # Load metadata
+    try:
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+    except Exception as e:
+        print(f"Error loading metadata, initializing new file: {e}")
+        # Initialize with default structure
+        metadata = {}
+        for code in COMPANY_FOLDERS:
+            metadata[code] = {
+                "available_years": [],
+                "quarters_by_year": {},
+                "missing_quarters": {},
+                "fiscal_calendar": {
+                    "Q1": "Jun",
+                    "Q2": "Sep",
+                    "Q3": "Dec",
+                    "Q4": "Mar"
+                },
+                "last_updated": datetime.now().isoformat()
+            }
+    
+    # Get the company folder
+    company_folder = COMPANY_FOLDERS.get(company_code, f"{company_code.split('.')[0]}_Reports")
+    
+    # Initialize company data if not exists
+    if company_code not in metadata:
+        metadata[company_code] = {
+            "available_years": [],
+            "quarters_by_year": {},
+            "missing_quarters": {},
+            "fiscal_calendar": {
+                "Q1": "Jun",  # Default fiscal calendar
+                "Q2": "Sep",
+                "Q3": "Dec",
+                "Q4": "Mar"
+            },
+            "last_updated": datetime.now().isoformat()
+        }
+    
+    # Update available years
+    years_processed = summary["years_processed"]
+    metadata[company_code]["available_years"] = sorted(list(set(metadata[company_code]["available_years"] + years_processed)))
+    
+    # Define fiscal calendar mapping between months and quarters
+    fiscal_calendar = metadata[company_code]["fiscal_calendar"]
+    month_to_quarter = {
+        "jun": "Q1", "june": "Q1", "06": "Q1",
+        "sep": "Q2", "sept": "Q2", "september": "Q2", "09": "Q2",
+        "dec": "Q3", "december": "Q3", "12": "Q3",
+        "mar": "Q4", "march": "Q4", "03": "Q4"
+    }
+    
+    # Scan the reports folder to identify quarters
+    quarters_by_year = {}
+    all_quarters = ["Q1", "Q2", "Q3", "Q4"]
+    missing_quarters = {}
+    
+    if os.path.exists(company_folder):
+        pdf_files = [f for f in os.listdir(company_folder) if f.lower().endswith('.pdf')]
+        
+        # First, identify which quarters we have for each year
+        for pdf_file in pdf_files:
+            # Try to extract year from filename
+            year_match = re.search(r'20\d{2}', pdf_file)
+            year = year_match.group(0) if year_match else None
+            
+            if not year:
+                # Try to use file creation time as fallback
+                file_path = os.path.join(company_folder, pdf_file)
+                creation_time = os.path.getctime(file_path)
+                year = str(datetime.fromtimestamp(creation_time).year)
+            
+            # Initialize year in quarters dictionary if not exists
+            if year not in quarters_by_year:
+                quarters_by_year[year] = []
+            
+            # Try to identify quarter from filename
+            quarter = None
+            
+            # First check for direct quarter mention (Q1, Q2, etc.)
+            q_match = re.search(r'Q([1-4])', pdf_file, re.IGNORECASE)
+            if q_match:
+                quarter = f"Q{q_match.group(1)}"
+            else:
+                # Check for month mentions to identify quarter
+                pdf_lower = pdf_file.lower()
+                for month_key, q_val in month_to_quarter.items():
+                    if month_key in pdf_lower:
+                        quarter = q_val
+                        break
+            
+            # If still no quarter identified, try to read the first few pages of the PDF
+            if not quarter and os.path.exists(os.path.join(company_folder, pdf_file)):
+                try:
+                    # This would require a PDF reading library like PyPDF2 or pdfplumber
+                    # For now, we'll just log that we couldn't identify the quarter
+                    print(f"Could not identify quarter for {pdf_file} from filename")
+                    
+                    # As a last resort, try heuristics based on common patterns
+                    if "three months" in pdf_lower or "3 months" in pdf_lower:
+                        if "june" in pdf_lower or "jun" in pdf_lower or "30th june" in pdf_lower:
+                            quarter = "Q1"
+                        elif "september" in pdf_lower or "sep" in pdf_lower or "30th september" in pdf_lower:
+                            quarter = "Q2"
+                        elif "december" in pdf_lower or "dec" in pdf_lower or "31st december" in pdf_lower:
+                            quarter = "Q3"
+                        elif "march" in pdf_lower or "mar" in pdf_lower or "31st march" in pdf_lower:
+                            quarter = "Q4"
+                except Exception as e:
+                    print(f"Error reading PDF {pdf_file}: {e}")
+            
+            # Add the quarter to the list if found
+            if quarter and quarter not in quarters_by_year[year]:
+                quarters_by_year[year].append(quarter)
+                print(f"Identified {quarter} for year {year} from file {pdf_file}")
+        
+        # Sort quarters for each year
+        for year in quarters_by_year:
+            quarters_by_year[year] = sorted(quarters_by_year[year])
+        
+        # Then, for each year, determine which quarters are missing
+        for year in years_processed:
+            year_str = str(year)
+            available_quarters = quarters_by_year.get(year_str, [])
+            
+            if year_str not in missing_quarters:
+                missing_quarters[year_str] = []
+                
+            # Identify missing quarters
+            for q in all_quarters:
+                if q not in available_quarters:
+                    missing_quarters[year_str].append(q)
+    
+    # Update metadata with quarters and missing quarters
+    metadata[company_code]["quarters_by_year"] = quarters_by_year
+    metadata[company_code]["missing_quarters"] = missing_quarters
+    metadata[company_code]["last_updated"] = datetime.now().isoformat()
+    
+    # Save updated metadata
+    try:
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        print(f"Updated metadata for {company_code}")
+        print(f"Available quarters: {quarters_by_year}")
+        print(f"Missing quarters: {missing_quarters}")
+    except Exception as e:
+        print(f"Error saving metadata: {e}")
 
 # For testing in standalone mode
 if __name__ == "__main__":
