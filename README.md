@@ -10,15 +10,20 @@ This project automates the extraction of financial metrics from quarterly report
 
 ```
 .
-├── src/
-│   ├── agents/             # Agent-related functionality
-│   ├── ingestion/          # PDF parsing and data ingestion
-│   ├── metrics/            # Financial metrics extraction and validation
-│   └── utils/              # Utility functions and helpers
-├── data/                   # Storage for reports and processed data
-├── config.yaml             # Configuration settings
-├── main.py                 # Application entry point
-└── requirements.txt        # Dependencies
+├── REXP_Datasets/          # Contains datasets for Richard Pieris PLC
+├── REXP_Reports/           # Contains raw reports for Richard Pieris PLC
+├── DIPD_Datasets/          # Contains datasets for Dipped Products PLC
+├── DIPD_Reports/           # Contains raw reports for Dipped Products PLC
+├── parser.py               # Handles PDF parsing and data extraction
+├── forecaster_agent.py     # Manages forecasting logic and agent interactions
+├── app.py                  # Main application logic and Streamlit UI
+├── scrapper.py             # Scrapes additional data if needed
+├── prompts.py              # Contains prompts for LLM interactions
+├── query_engine.py         # Manages querying and data retrieval
+├── reports_metadata.json   # Metadata for processed reports
+├── requirements.txt        # Dependencies
+├── .env                    # Environment variables
+└── README.md               # Project documentation
 ```
 
 ## Features
@@ -29,34 +34,44 @@ This project automates the extraction of financial metrics from quarterly report
 - Time series forecasting with ARIMA and Exponential Smoothing
 - Report organization and metadata management
 
+## File Descriptions
+
+- **parser.py**: Handles the extraction of text from PDF files, organizes PDF files by year and quarter, and processes reports from the UI. It also updates the metadata for processed reports.
+- **forecaster_agent.py**: Manages the forecasting logic, including time series analysis and agent interactions for financial predictions.
+- **app.py**: Contains the main application logic, including the Streamlit UI for displaying datasets, visualizing financial metrics, and managing user interactions.
+- **scrapper.py**: Scrapes additional data if needed, though its specific functionality is not detailed in the current context.
+- **prompts.py**: Contains prompts used for interactions with language models, facilitating natural language processing tasks.
+- **query_engine.py**: Manages querying and data retrieval, including loading financial data from JSON files and handling query engine components.
+- **reports_metadata.json**: Stores metadata for processed reports, including available years, quarters, and file mappings.
+
 ## Setup
 
 1. Clone the repository
 2. Install dependencies:
-   ```
+   ```bash
    pip install -r requirements.txt
    ```
 3. Create a `.env` file with your OpenAI API key:
-   ```
+   ```bash
    OPENAI_API_KEY=your_api_key_here
    ```
 4. Initialize the environment:
-   ```
-   python main.py --init
+   ```bash
+   python app.py --init
    ```
 
 ## Usage
 
 Process all company reports:
 
-```
-python main.py --process
+```bash
+python app.py --process
 ```
 
 Process reports for a specific company:
 
-```
-python main.py --process --company AAPL
+```bash
+python app.py --process --company AAPL
 ```
 
 ## Dependencies
@@ -67,12 +82,6 @@ python main.py --process --company AAPL
 - statsmodels, scikit-learn: Time series forecasting
 - streamlit: UI components (future development)
 - Other utilities: tqdm, pyyaml, python-dotenv
-
-2. **PDF Processing**: Convert PDF reports to searchable text using LlamaParse
-3. **Question Answering**: Query financial data using natural language
-4. **Visualization**: Generate charts for key financial metrics
-5. **Comparison**: Compare financial performance across companies
-6. **Forecasting**: Project future financial performance based on historical trends
 
 ## Troubleshooting
 
