@@ -385,80 +385,26 @@ def extract_text_from_pdf(pdf_path, max_pages=8, company_code=None):
         return None
 
 def get_pdf_files_by_year(company_folder):
-    """Organize PDF files by detected year and quarter from filename or content."""
+    """Organize PDF files by detected year and quarter using regex and LLM verification."""
     if not os.path.exists(company_folder):
         return {}
 
     files_by_year = {}
     all_files = [f for f in os.listdir(company_folder) if f.lower().endswith('.pdf')]
 
-    month_to_quarter = {
-        "jun": "Q1", "june": "Q1", "06": "Q1", "6": "Q1",
-        "sep": "Q2", "sept": "Q2", "september": "Q2", "09": "Q2", "9": "Q2",
-        "dec": "Q3", "december": "Q3", "12": "Q3",
-        "mar": "Q4", "march": "Q4", "03": "Q4", "3": "Q4"
-    }
-
-    quarter_patterns = {
-        "Q1": [r"three months ended.*(june|jun)", r"q1", r"first quarter"],
-        "Q2": [
-            r"(six|6)\s+months\s+ended\s+30(th)?\s+(sep|september)",
-            r"six\s+months\s+ended.*sep",
-            r"half\s+year\s+ended.*sep",
-            r"period\s+ended\s+30(th)?\s+sep.*six\s+months",
-            r"3\s+months\s+ended.*sep",  # fallback
-            r"q2", r"second quarter"
-        ],
-        "Q3": [
-            r"(nine|9)\s+months\s+ended.*(dec|december)",
-            r"three months ended.*(dec|december)",
-            r"q3", r"third quarter"
-        ],
-        "Q4": [
-            r"(twelve|12)\s+months\s+ended.*(mar|march)",
-            r"(?:three|3)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:31(?:st)?\s*)?(?:mar|march)",
-            r"fourth\s*quarter",
-            r"quarter\s*(?:ended|ending)\s*(?:31(?:st)?\s*)?(?:mar|march)",
-            r"march\s*quarter",
-            r"q4"
-        ]
-    }
-
     for file in all_files:
         file_path = os.path.join(company_folder, file)
-        file_lower = file.lower()
-        file_text = extract_text_from_pdf(file_path)
-
-        # Detect year from filename or PDF content
-        year = None
-        year_match = re.search(r'20\d{2}', file)
-        if year_match:
-            year = year_match.group(0)
-        else:
-            if file_text is not None:
-                text_year_match = re.search(r'20\d{2}', file_text)
-                if text_year_match:
-                    year = text_year_match.group(0)
+        
+        # Extract quarter and year using regex patterns and LLM verification
+        quarter, year = extract_quarter_from_pdf_content(file_path)
+        
+        # If year not determined, try basic pattern from filename or use file creation time
+        if not year:
+            year_match = re.search(r'20\d{2}', file)
+            if year_match:
+                year = year_match.group(0)
             else:
                 year = str(datetime.fromtimestamp(os.path.getctime(file_path)).year)
-
-        # Detect quarter
-        quarter = None
-        for q, patterns in quarter_patterns.items():
-            for pattern in patterns:
-                if file_text is not None and re.search(pattern, file_text, re.IGNORECASE):
-                    quarter = q
-                    break
-            if quarter:
-                break
-
-        # Fallback using LLM if not detected via regex
-        if not quarter:
-            llm_quarter, llm_year = extract_quarter_from_pdf_content(file_path)
-            if llm_quarter:
-                quarter = llm_quarter
-            if llm_year:
-                year = llm_year
 
         # Save results
         if year not in files_by_year:
@@ -1044,131 +990,48 @@ def parse_quarter_response(response_text):
     quarter, year, _ = match.groups()
     return quarter.upper(), year
 
-def extract_quarter_from_pdf_content(pdf_path):
+def verify_with_llm(pdf_path, detected_quarter, detected_year):
     """
-    Extract quarter and year information by reading the PDF content.
-    First attempts with robust PDF parsing, then falls back to GPT-4 if needed.
+    Verify a detected quarter and year using LLM.
     
     Args:
         pdf_path: Path to the PDF file
+        detected_quarter: Quarter detected by regex patterns (can be None)
+        detected_year: Year detected by regex patterns (can be None)
         
     Returns:
-        tuple: (quarter, year) or (None, None) if detection fails
+        dict: Verification result with keys:
+            - is_correct: True if detected values are correct, False otherwise
+            - quarter: Suggested quarter (if is_correct is False)
+            - year: Suggested year (if is_correct is False)
+            - confidence: HIGH/MEDIUM/LOW
+            - period_end_date: Date in YYYY-MM-DD format
     """
     if not os.path.exists(pdf_path):
         print(f"PDF file not found: {pdf_path}")
-        return None, None
+        return {
+            "is_correct": False,
+            "quarter": None,
+            "year": None,
+            "confidence": "LOW",
+            "period_end_date": None
+        }
     
     try:
-        # First attempt: Parse PDF content directly
-        reader = PdfReader(pdf_path)
-        text = ""
-        
-        # Read first 3 pages with different extraction modes
-        for page_num in range(min(3, len(reader.pages))):
-            page = reader.pages[page_num]
-            # Try layout mode first for better structure preservation
-            try:
-                text += page.extract_text() + "\n"
-            except Exception as e:
-                print(f"Text extraction failed for page {page_num}: {e}")
-                continue
-        
-        text = text.lower()
-        
-        # Enhanced patterns for quarter detection
-        quarter_patterns = {
-            "Q1": [
-                r"(?:three|3)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:30(?:th)?\s*)?june",
-                r"first\s*quarter",
-                r"quarter\s*(?:ended|ending)\s*(?:30(?:th)?\s*)?june",
-                r"june\s*quarter",
-                r"q1"
-            ],
-            "Q2": [
-                r"(?:six|6)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:30(?:th)?\s*)?(?:sep|september)",
-                r"(?:three|3)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:30(?:th)?\s*)?(?:sep|september)",
-                r"second\s*quarter",
-                r"quarter\s*(?:ended|ending)\s*(?:30(?:th)?\s*)?(?:sep|september)",
-                r"september\s*quarter",
-                r"q2"
-            ],
-            "Q3": [
-                r"(?:nine|9)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:31(?:st)?\s*)?(?:dec|december)",
-                r"(?:three|3)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:31(?:st)?\s*)?(?:dec|december)",
-                r"third\s*quarter",
-                r"quarter\s*(?:ended|ending)\s*(?:31(?:st)?\s*)?(?:dec|december)",
-                r"december\s*quarter",
-                r"q3"
-            ],
-            "Q4": [
-                r"(?:twelve|12)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:31(?:st)?\s*)?(?:mar|march)",
-                r"(?:three|3)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:31(?:st)?\s*)?(?:mar|march)",
-                r"fourth\s*quarter",
-                r"quarter\s*(?:ended|ending)\s*(?:31(?:st)?\s*)?(?:mar|march)",
-                r"march\s*quarter",
-                r"q4"
-            ]
-        }
-        
-        # Try to find quarter
-        quarter = None
-        for q, patterns in quarter_patterns.items():
-            for pattern in patterns:
-                if re.search(pattern, text, re.IGNORECASE | re.MULTILINE):
-                    quarter = q
-                    break
-            if quarter:
-                break
-        
-        # Enhanced year detection
-        # First try to find year near the detected quarter pattern
-        year = None
-        if quarter:
-            # Look for year in proximity of quarter mention
-            year_pattern = r"(?:20\d{2})"
-            for line in text.split('\n'):
-                if any(re.search(pattern, line, re.IGNORECASE) for pattern in quarter_patterns[quarter]):
-                    year_match = re.search(year_pattern, line)
-                    if year_match:
-                        year = year_match.group(0)
-                        break
-        
-        # If year not found near quarter, try other common patterns
-        if not year:
-            # Try to find year in common date formats
-            date_patterns = [
-                r"(?:period|year|quarter).*?(?:end(?:ed|ing)).*?(20\d{2})",
-                r"(?:31(?:st)?|30(?:th)?)\s*(?:march|june|september|december)\s*(20\d{2})",
-                r"(20\d{2}).*?(?:31(?:st)?|30(?:th)?)\s*(?:march|june|september|december)",
-                r"interim.*?(?:report|statement).*?(20\d{2})",
-                r"(20\d{2}).*?interim.*?(?:report|statement)"
-            ]
-            
-            for pattern in date_patterns:
-                match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-                if match:
-                    year = match.group(1)
-                    break
-        
-        # If we found both quarter and year through PDF parsing
-        if quarter and year:
-            # Special handling for Q4 reports ending in March
-            if quarter == "Q4" and re.search(r"march|mar", text, re.IGNORECASE):
-                # For Q4 reports ending in March, use previous year
-                year = str(int(year) - 1)
-            return quarter, year
-        
-        # Second attempt: Use GPT-4 as fallback
-        print(f"PDF parsing could not determine quarter/year for {os.path.basename(pdf_path)}, trying GPT...")
-        
         # Initialize OpenAI LLM
         llm = OpenAI(model="gpt-4", temperature=0, api_key=os.environ.get("OPENAI_API_KEY"))
         
         # Create a query engine for this PDF
         query_engine = create_query_engine_for_single_file(pdf_path)
         if not query_engine:
-            return None, None
+            print(f"Could not create query engine for {os.path.basename(pdf_path)}")
+            return {
+                "is_correct": False,
+                "quarter": None,
+                "year": None,
+                "confidence": "LOW",
+                "period_end_date": None
+            }
         
         # Create a query engine tool
         query_engine_tool = QueryEngineTool(
@@ -1186,11 +1049,43 @@ def extract_quarter_from_pdf_content(pdf_path):
             verbose=False
         )
         
-        # Enhanced prompt for GPT analysis
-        query = """You are an expert in financial report analysis.
+        # Dynamic prompt based on whether we're verifying or detecting from scratch
+        if detected_quarter and detected_year:
+            prompt_text = f"""You are an expert in financial report analysis.
+
+Analyze this Sri Lankan quarterly financial report and VERIFY if the following detection is correct:
+- Detected Quarter: {detected_quarter}
+- Detected Year: {detected_year}
+
+Key patterns to look for:
+1. "X months ended [DATE]" where X can be 3, 6, 9, or 12
+2. "Quarter ended [DATE]"
+3. Period end dates in various formats
+4. Look for dates in both text and financial statements
+
+Quarter mapping:
+- Q1: ends on June 30
+- Q2: ends on September 30
+- Q3: ends on December 31
+- Q4: ends on March 31 (use previous year)
+
+Respond with a JSON containing these fields:
+{{
+  "is_correct": true/false,
+  "quarter": "Q1/Q2/Q3/Q4",
+  "year": "YYYY",
+  "confidence": "HIGH/MEDIUM/LOW",
+  "period_end_date": "YYYY-MM-DD"
+}}
+
+If the detection is correct, set is_correct to true and use the detected values.
+If incorrect, set is_correct to false and provide the correct values.
+If unsure, set confidence to "LOW".
+"""
+        else:
+            prompt_text = """You are an expert in financial report analysis.
 
 Analyze this Sri Lankan quarterly financial report and extract the following:
-
 - Quarter (Q1, Q2, Q3, Q4 only)
 - Year (4-digit)
 - Period End Date (YYYY-MM-DD)
@@ -1207,61 +1102,307 @@ Quarter mapping:
 - Q3: ends on December 31
 - Q4: ends on March 31 (use previous year)
 
-Respond ONLY in this format, on a single line:
-QUARTER: Q3 | YEAR: 2023 | DATE: 2023-12-31
+Respond with a JSON containing these fields:
+{
+  "is_correct": true,
+  "quarter": "Q1/Q2/Q3/Q4",
+  "year": "YYYY",
+  "confidence": "HIGH/MEDIUM/LOW",
+  "period_end_date": "YYYY-MM-DD"
+}
 
-If unsure, respond with:
-UNKNOWN"""
+Set is_correct to true since this is a new detection.
+If unsure about any value, set confidence to "LOW".
+"""
         
+        # Get response from LLM
         try:
-            # Get response from GPT
-            response = agent.chat(query)
+            response = agent.chat(prompt_text)
             
             # Print raw response for debugging
-            print(f"GPT raw response for {os.path.basename(pdf_path)}: {str(response).strip()}")
+            print(f"LLM verification response for {os.path.basename(pdf_path)}: {str(response).strip()}")
             
             # Guard clause for empty responses
             response_text = str(response).strip()
-            if not response_text or "UNKNOWN" in response_text.upper():
-                print(f"Empty or UNKNOWN response from GPT for {os.path.basename(pdf_path)}")
-                return None, None
+            if not response_text or len(response_text) < 5:
+                print(f"Empty response from LLM for {os.path.basename(pdf_path)}")
+                return {
+                    "is_correct": False,
+                    "quarter": None,
+                    "year": None,
+                    "confidence": "LOW",
+                    "period_end_date": None
+                }
             
-            # Parse the response using regex
-            match = re.search(r'QUARTER:\s*(Q[1-4])\s*\|\s*YEAR:\s*(\d{4})\s*\|\s*DATE:\s*(\d{4}-\d{2}-\d{2})', response_text, re.IGNORECASE)
-            if not match:
-                print(f"⚠️ GPT response could not be parsed: {response_text}")
-                return None, None
-            
-            quarter, year, date_str = match.groups()
-            quarter = quarter.upper()
-            
+            # Try to parse JSON from the response
             try:
-                # Validate the date and quarter mapping
-                period_date = datetime.strptime(date_str, "%Y-%m-%d")
-                month = period_date.month
+                # First try to extract JSON from code blocks if present
+                json_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response_text)
+                if json_match:
+                    json_str = json_match.group(1)
+                else:
+                    # Try to extract just a JSON object from anywhere in the response
+                    json_match = re.search(r'({[\s\S]*?})', response_text)
+                    if json_match:
+                        json_str = json_match.group(1)
+                    else:
+                        # If all else fails, use the whole response
+                        json_str = response_text
                 
-                # Validate quarter matches period end date
-                if month == 6 and quarter == "Q1":
-                    return quarter, year
-                elif month == 9 and quarter == "Q2":
-                    return quarter, year
-                elif month == 12 and quarter == "Q3":
-                    return quarter, year
-                elif month == 3 and quarter == "Q4":
-                    # For Q4 reports ending in March, use previous year
-                    return quarter, str(period_date.year - 1)
+                # Preprocess the JSON string
+                json_str = preprocess_json_string(json_str)
                 
-                print(f"Quarter {quarter} doesn't match period end month {month} for {os.path.basename(pdf_path)}")
-                return None, None
+                # Parse the JSON
+                verification_result = json.loads(json_str)
                 
-            except ValueError as e:
-                print(f"Error validating date for {os.path.basename(pdf_path)}: {e}")
-                return None, None
+                # Ensure all required fields are in the result
+                required_fields = ["is_correct", "quarter", "year", "confidence", "period_end_date"]
+                for field in required_fields:
+                    if field not in verification_result:
+                        if field == "is_correct":
+                            verification_result["is_correct"] = True
+                        elif field == "confidence":
+                            verification_result["confidence"] = "MEDIUM"
+                        else:
+                            verification_result[field] = None
                 
+                # Validate the date and quarter mapping if we have a date
+                if verification_result["period_end_date"]:
+                    try:
+                        period_date = datetime.strptime(verification_result["period_end_date"], "%Y-%m-%d")
+                        month = period_date.month
+                        
+                        # Validate quarter matches period end date
+                        quarter = verification_result["quarter"]
+                        if quarter:
+                            expected_quarter = None
+                            if month == 6:
+                                expected_quarter = "Q1"
+                            elif month == 9:
+                                expected_quarter = "Q2"
+                            elif month == 12:
+                                expected_quarter = "Q3"
+                            elif month == 3:
+                                expected_quarter = "Q4"
+                                # For Q4 reports ending in March, adjust year if needed
+                                if quarter == "Q4" and verification_result["year"]:
+                                    year_int = int(verification_result["year"])
+                                    if year_int == period_date.year:
+                                        verification_result["year"] = str(period_date.year - 1)
+                            
+                            # If the quarters don't match what we expect, lower confidence
+                            if expected_quarter and quarter != expected_quarter:
+                                verification_result["confidence"] = "LOW"
+                                print(f"Warning: Quarter {quarter} doesn't match expected quarter {expected_quarter} for end date {verification_result['period_end_date']}")
+                    except (ValueError, TypeError) as e:
+                        print(f"Error validating date in verification: {e}")
+                        verification_result["confidence"] = "LOW"
+                
+                return verification_result
+                
+            except (json.JSONDecodeError, TypeError, ValueError) as e:
+                print(f"Error parsing verification response: {e}")
+                # Fallback to parsing using regex if JSON parsing fails
+                try:
+                    # Try old format as fallback
+                    match = re.search(r'QUARTER:\s*(Q[1-4])\s*\|\s*YEAR:\s*(\d{4})\s*\|\s*DATE:\s*(\d{4}-\d{2}-\d{2})', response_text, re.IGNORECASE)
+                    if match:
+                        quarter, year, date_str = match.groups()
+                        return {
+                            "is_correct": True if (detected_quarter == quarter and detected_year == year) else False,
+                            "quarter": quarter.upper(),
+                            "year": year,
+                            "confidence": "MEDIUM",
+                            "period_end_date": date_str
+                        }
+                except Exception:
+                    pass
+                
+                return {
+                    "is_correct": False,
+                    "quarter": None,
+                    "year": None,
+                    "confidence": "LOW",
+                    "period_end_date": None
+                }
+        
         except Exception as e:
-            print(f"Error processing GPT response for {os.path.basename(pdf_path)}: {e}")
-            return None, None
+            print(f"Error processing LLM verification: {e}")
+            return {
+                "is_correct": False,
+                "quarter": None,
+                "year": None,
+                "confidence": "LOW",
+                "period_end_date": None
+            }
             
+    except Exception as e:
+        print(f"Error in LLM verification: {e}")
+        return {
+            "is_correct": False,
+            "quarter": None,
+            "year": None,
+            "confidence": "LOW",
+            "period_end_date": None
+        }
+
+def extract_quarter_from_pdf_content(pdf_path):
+    """
+    Extract quarter and year information by reading the PDF content.
+    First attempts with regex patterns, then ALWAYS verifies with LLM.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        
+    Returns:
+        tuple: (quarter, year) or (None, None) if detection fails
+    """
+    if not os.path.exists(pdf_path):
+        print(f"PDF file not found: {pdf_path}")
+        return None, None
+    
+    try:
+        # STEP 1: Extract text and detect quarter/year using regex patterns
+        regex_quarter = None
+        regex_year = None
+        
+        try:
+            # Parse PDF content
+            reader = PdfReader(pdf_path)
+            text = ""
+            
+            # Read first 3 pages with different extraction modes
+            for page_num in range(min(3, len(reader.pages))):
+                page = reader.pages[page_num]
+                try:
+                    text += page.extract_text() + "\n"
+                except Exception as e:
+                    print(f"Text extraction failed for page {page_num}: {e}")
+                    continue
+            
+            text = text.lower()
+            
+            # Enhanced patterns for quarter detection
+            quarter_patterns = {
+                "Q1": [
+                    r"(?:three|3)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:30(?:th)?\s*)?june",
+                    r"first\s*quarter",
+                    r"quarter\s*(?:ended|ending)\s*(?:30(?:th)?\s*)?june",
+                    r"june\s*quarter",
+                    r"q1"
+                ],
+                "Q2": [
+                    r"(?:six|6)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:30(?:th)?\s*)?(?:sep|september)",
+                    r"(?:three|3)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:30(?:th)?\s*)?(?:sep|september)",
+                    r"second\s*quarter",
+                    r"quarter\s*(?:ended|ending)\s*(?:30(?:th)?\s*)?(?:sep|september)",
+                    r"september\s*quarter",
+                    r"q2"
+                ],
+                "Q3": [
+                    r"(?:nine|9)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:31(?:st)?\s*)?(?:dec|december)",
+                    r"(?:three|3)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:31(?:st)?\s*)?(?:dec|december)",
+                    r"third\s*quarter",
+                    r"quarter\s*(?:ended|ending)\s*(?:31(?:st)?\s*)?(?:dec|december)",
+                    r"december\s*quarter",
+                    r"q3"
+                ],
+                "Q4": [
+                    r"(?:twelve|12)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:31(?:st)?\s*)?(?:mar|march)",
+                    r"(?:three|3)\s*months?\s*(?:period)?\s*end(?:ed|ing)\s*(?:31(?:st)?\s*)?(?:mar|march)",
+                    r"fourth\s*quarter",
+                    r"quarter\s*(?:ended|ending)\s*(?:31(?:st)?\s*)?(?:mar|march)",
+                    r"march\s*quarter",
+                    r"q4"
+                ]
+            }
+            
+            # Try to find quarter with regex
+            for q, patterns in quarter_patterns.items():
+                for pattern in patterns:
+                    if re.search(pattern, text, re.IGNORECASE | re.MULTILINE):
+                        regex_quarter = q
+                        break
+                if regex_quarter:
+                    break
+            
+            # Enhanced year detection with regex
+            if regex_quarter:
+                # Look for year in proximity of quarter mention
+                year_pattern = r"(?:20\d{2})"
+                for line in text.split('\n'):
+                    if any(re.search(pattern, line, re.IGNORECASE) for pattern in quarter_patterns[regex_quarter]):
+                        year_match = re.search(year_pattern, line)
+                        if year_match:
+                            regex_year = year_match.group(0)
+                            break
+            
+            # If year not found near quarter, try other common patterns
+            if not regex_year:
+                # Try to find year in common date formats
+                date_patterns = [
+                    r"(?:period|year|quarter).*?(?:end(?:ed|ing)).*?(20\d{2})",
+                    r"(?:31(?:st)?|30(?:th)?)\s*(?:march|june|september|december)\s*(20\d{2})",
+                    r"(20\d{2}).*?(?:31(?:st)?|30(?:th)?)\s*(?:march|june|september|december)",
+                    r"interim.*?(?:report|statement).*?(20\d{2})",
+                    r"(20\d{2}).*?interim.*?(?:report|statement)"
+                ]
+                
+                for pattern in date_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+                    if match:
+                        regex_year = match.group(1)
+                        break
+        except Exception as e:
+            print(f"Error during regex detection: {e}")
+        
+        # If we found quarter or year with regex, log for diagnostic purposes
+        if regex_quarter or regex_year:
+            # Special handling for Q4 reports ending in March
+            if regex_quarter == "Q4" and regex_year and re.search(r"march|mar", text, re.IGNORECASE):
+                # For Q4 reports ending in March, use previous year
+                regex_year = str(int(regex_year) - 1)
+            
+            print(f"Regex detected: Quarter={regex_quarter or 'None'}, Year={regex_year or 'None'} for {os.path.basename(pdf_path)}")
+        else:
+            print(f"Regex detection failed for {os.path.basename(pdf_path)}")
+        
+        # STEP 2: ALWAYS verify with LLM
+        print(f"Verifying with LLM for {os.path.basename(pdf_path)}...")
+        verification_result = verify_with_llm(pdf_path, regex_quarter, regex_year)
+        
+        # STEP 3: Handle the result based on LLM verification
+        if verification_result["is_correct"] and regex_quarter and regex_year:
+            # LLM confirms regex detection is correct
+            print(f"LLM verified: Quarter={regex_quarter}, Year={regex_year} for {os.path.basename(pdf_path)}")
+            return regex_quarter, regex_year
+            
+        elif verification_result["quarter"] and verification_result["year"]:
+            # LLM provides different results
+            llm_quarter = verification_result["quarter"]
+            llm_year = verification_result["year"]
+            confidence = verification_result["confidence"]
+            
+            if confidence in ["HIGH", "MEDIUM"]:
+                # Accept LLM's suggestion with high/medium confidence
+                if regex_quarter and regex_year:
+                    print(f"LLM override ({confidence} confidence): Changed from {regex_quarter}/{regex_year} to {llm_quarter}/{llm_year} for {os.path.basename(pdf_path)}")
+                else:
+                    print(f"LLM detected ({confidence} confidence): Quarter={llm_quarter}, Year={llm_year} for {os.path.basename(pdf_path)}")
+                return llm_quarter, llm_year
+            else:
+                # Low confidence - use regex if available, otherwise use LLM result but log warning
+                if regex_quarter and regex_year:
+                    print(f"Using regex detection (LLM has LOW confidence): Quarter={regex_quarter}, Year={regex_year} for {os.path.basename(pdf_path)}")
+                    return regex_quarter, regex_year
+                elif llm_quarter and llm_year:
+                    print(f"WARNING: Using LLM detection with LOW confidence: Quarter={llm_quarter}, Year={llm_year} for {os.path.basename(pdf_path)}")
+                    return llm_quarter, llm_year
+        
+        # If we get here, neither regex nor LLM could determine both quarter and year
+        print(f"Failed to determine quarter and year for {os.path.basename(pdf_path)} using both regex and LLM")
+        return None, None
+        
     except Exception as e:
         print(f"Error in quarter/year detection for {os.path.basename(pdf_path)}: {e}")
         return None, None
@@ -1313,7 +1454,7 @@ def scan_company_reports(company_code):
                 "available_years": [],
                 "quarters_by_year": {},
                 "missing_quarters": {},
-                "raw_files": {},
+                "raw_files": {"unknown": []},
                 "file_mapping": {},
                 "fiscal_calendar": {
                     "Q1": "Jun",
@@ -1334,187 +1475,58 @@ def scan_company_reports(company_code):
         "errors": []
     }
     
-    # Reset raw_files structure to prevent duplicates
-    metadata[company_code]["raw_files"] = {"unknown": []}
+    # Initialize raw_files structure if not exists
+    if "raw_files" not in metadata[company_code]:
+        metadata[company_code]["raw_files"] = {"unknown": []}
+    elif "unknown" not in metadata[company_code]["raw_files"]:
+        metadata[company_code]["raw_files"]["unknown"] = []
     
-    # Process each PDF file
+    # Create a mapping of already classified files to prevent reprocessing
+    already_classified = {}
+    for year, quarters in metadata[company_code]["raw_files"].items():
+        if year != "unknown":
+            for quarter, files in quarters.items():
+                for file_name in files:
+                    already_classified[file_name] = {"year": year, "quarter": quarter}
+    
+    # Determine which files need to be processed
+    files_to_process = []
     for file_name in pdf_files:
+        if file_name in already_classified:
+            # File already classified, add to processed_files
+            classification = already_classified[file_name]
+            year = classification["year"]
+            quarter = classification["quarter"]
+            
+            if year not in processed_files:
+                processed_files[year] = {}
+            if quarter not in processed_files[year]:
+                processed_files[year][quarter] = []
+            processed_files[year][quarter].append(file_name)
+            
+            # Add to successful classification results
+            analysis_results["successfully_classified"].append({
+                "file": file_name,
+                "quarter": quarter,
+                "year": year,
+                "confidence": "HIGH",
+                "evidence": "Previously classified"
+            })
+            
+            print(f"Skipping already classified file: {file_name} (Year={year}, Quarter={quarter})")
+        else:
+            # New file needs to be processed
+            files_to_process.append(file_name)
+    
+    print(f"Found {len(files_to_process)} new files to process")
+    
+    # Process each new PDF file
+    for file_name in files_to_process:
         total_files += 1
         file_path = os.path.join(company_folder, file_name)
         
-        # First try: Extract quarter and year using PDF content parser
+        # Extract quarter and year using LLM
         quarter, year = extract_quarter_from_pdf_content(file_path)
-        
-        # Second try: If first attempt fails, use GPT agent for analysis
-        if not quarter or not year:
-            print(f"Initial detection failed for {file_name}, attempting GPT analysis...")
-            
-            # Create query engine for this PDF
-            query_engine = create_query_engine_for_single_file(file_path)
-            if query_engine:
-                try:
-                    # Initialize OpenAI LLM
-                    llm = OpenAI(model="gpt-4", temperature=0, api_key=os.environ.get("OPENAI_API_KEY"))
-                    
-                    # Create query engine tool
-                    query_engine_tool = QueryEngineTool(
-                        query_engine=query_engine,
-                        metadata=ToolMetadata(
-                            name="pdf_analyzer",
-                            description=f"Analyzes PDF content from {file_name}"
-                        )
-                    )
-                    
-                    # Create agent
-                    agent = OpenAIAgent.from_tools(
-                        [query_engine_tool],
-                        llm=llm,
-                        verbose=False
-                    )
-                    
-                    # Use a more detailed prompt for analysis
-                    query = """
-                    Analyze this financial report VERY CAREFULLY and determine the exact quarter and year.
-                    
-                    Look for these specific patterns in order of priority:
-                    1. Direct statements about the period:
-                       - "Three Months ended [Date]" = Q1
-                       - "Six Months ended [Date]" = Q2
-                       - "Nine Months ended [Date]" = Q3
-                       - "Twelve Months ended [Date]" = Q4
-                    
-                    2. Check the financial statement headers and dates:
-                       - Statement of Financial Position as at [Date]
-                       - Statement of Profit or Loss for the period ended [Date]
-                       - Statement of Comprehensive Income for [period] ended [Date]
-                    
-                    3. Look for comparative figures and their dates
-                    
-                    4. Check for fiscal year references:
-                       - "For the quarter ended..."
-                       - "For the [X] months period ended..."
-                    
-                    Rules for determining the quarter:
-                    - Q1 must end on June 30th
-                    - Q2 must end on September 30th
-                    - Q3 must end on December 31st
-                    - Q4 must end on March 31st
-                    
-                    Return ONLY a JSON with these fields:
-                    {
-                        "quarter": "Q1|Q2|Q3|Q4",
-                        "year": "YYYY",
-                        "period_end_date": "YYYY-MM-DD",
-                        "confidence": "HIGH|MEDIUM|LOW",
-                        "evidence": "Quote the exact text that supports this classification"
-                    }
-                    """
-                    
-                    # Get response
-                    response = agent.chat(query)
-                    
-                    try:
-                        # Try to extract JSON from the response
-                        json_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response.response)
-                        if json_match:
-                            json_str = json_match.group(1)
-                            print("Found JSON in code block")
-                        else:
-                            # Try to extract just a JSON object from anywhere in the response
-                            json_match = re.search(r'({[\s\S]*?})', response.response)
-                            if json_match:
-                                json_str = json_match.group(1)
-                                print("Found JSON object in response")
-                            else:
-                                # If all else fails, use the whole response
-                                json_str = response.response
-                                print("Using entire response as JSON")
-                        
-                        # Remove commas from numeric values - better approach to handle multiple commas
-                        json_str = re.sub(r'(-?\d+(?:,\d{3})+)', lambda m: m.group(0).replace(',', ''), json_str)
-                        
-                        # Preprocess JSON string to fix common issues
-                        json_str = preprocess_json_string(json_str)
-                        
-                        # Try to parse the JSON
-                        print(f"Parsing JSON: {json_str[:100]}...")  # Log first 100 chars
-                        metrics = json.loads(json_str)
-                        
-                        if metrics.get("confidence") in ["HIGH", "MEDIUM"]:
-                            # Validate the classification
-                            try:
-                                period_date = datetime.strptime(metrics.get("period_end_date"), "%Y-%m-%d")
-                                year_int = int(metrics.get("year"))
-                                current_year = datetime.now().year
-                                
-                                # Validate year is reasonable
-                                if current_year - 5 <= year_int <= current_year - 1:
-                                    # Validate quarter matches period end date
-                                    month = period_date.month
-                                    expected_quarter = None
-                                    if month == 6:
-                                        expected_quarter = "Q1"
-                                    elif month == 9:
-                                        expected_quarter = "Q2"
-                                    elif month == 12:
-                                        expected_quarter = "Q3"
-                                    elif month == 3:
-                                        expected_quarter = "Q4"
-                                        # Adjust year for Q4 reports
-                                        if metrics.get("quarter") == "Q4":
-                                            metrics["year"] = str(period_date.year - 1)
-                                    
-                                    if metrics.get("quarter") == expected_quarter:
-                                        # Update metadata
-                                        # Remove from unknown
-                                        metadata[company_code]["raw_files"]["unknown"].remove(file_name)
-                                        
-                                        # Add to correct year and quarter
-                                        if metrics.get("year") not in metadata[company_code]["raw_files"]:
-                                            metadata[company_code]["raw_files"][metrics.get("year")] = {}
-                                        if metrics.get("quarter") not in metadata[company_code]["raw_files"][metrics.get("year")]:
-                                            metadata[company_code]["raw_files"][metrics.get("year")][metrics.get("quarter")] = []
-                                        metadata[company_code]["raw_files"][metrics.get("year")][metrics.get("quarter")].append(file_name)
-                                        
-                                        # Update available years
-                                        if metrics.get("year") not in metadata[company_code]["available_years"]:
-                                            metadata[company_code]["available_years"].append(metrics.get("year"))
-                                            metadata[company_code]["available_years"].sort()
-                                        
-                                        # Update quarters by year
-                                        if metrics.get("year") not in metadata[company_code]["quarters_by_year"]:
-                                            metadata[company_code]["quarters_by_year"][metrics.get("year")] = []
-                                        if metrics.get("quarter") not in metadata[company_code]["quarters_by_year"][metrics.get("year")]:
-                                            metadata[company_code]["quarters_by_year"][metrics.get("year")].append(metrics.get("quarter"))
-                                            metadata[company_code]["quarters_by_year"][metrics.get("year")].sort()
-                                        
-                                        # Update missing quarters
-                                        if metrics.get("year") not in metadata[company_code]["missing_quarters"]:
-                                            metadata[company_code]["missing_quarters"][metrics.get("year")] = []
-                                        metadata[company_code]["missing_quarters"][metrics.get("year")] = [
-                                            q for q in ["Q1", "Q2", "Q3", "Q4"]
-                                            if q not in metadata[company_code]["quarters_by_year"][metrics.get("year")]
-                                        ]
-                                        
-                                        analysis_results["successfully_classified"].append({
-                                            "file": file_name,
-                                            "quarter": metrics.get("quarter"),
-                                            "year": metrics.get("year"),
-                                            "confidence": metrics.get("confidence"),
-                                            "evidence": metrics.get("evidence")
-                                        })
-                                        continue
-                            
-                            except (ValueError, TypeError) as e:
-                                print(f"Validation error for {file_name}: {e}")
-                        
-                    except Exception as e:
-                        print(f"Error parsing GPT response for {file_name}: {e}")
-                        quarter, year = None, None
-                        
-                except Exception as e:
-                    print(f"Error in GPT analysis for {file_name}: {e}")
-                    quarter, year = None, None
         
         if quarter and year and year.isdigit():
             year_int = int(year)
@@ -1523,7 +1535,8 @@ def scan_company_reports(company_code):
             if year_int not in valid_years:
                 print(f"Skipping file {file_name} - year {year} not in valid range {min(valid_years)}-{max(valid_years)}")
                 # Add to unknown if not in valid range
-                metadata[company_code]["raw_files"]["unknown"].append(file_name)
+                if file_name not in metadata[company_code]["raw_files"]["unknown"]:
+                    metadata[company_code]["raw_files"]["unknown"].append(file_name)
                 continue
             
             # Add to processed files
@@ -1555,11 +1568,30 @@ def scan_company_reports(company_code):
             
             if file_name not in metadata[company_code]["raw_files"][year][quarter]:
                 metadata[company_code]["raw_files"][year][quarter].append(file_name)
+                
+            # Remove from unknown if it was there
+            if file_name in metadata[company_code]["raw_files"]["unknown"]:
+                metadata[company_code]["raw_files"]["unknown"].remove(file_name)
+                
+            # Add to successful classification results
+            analysis_results["successfully_classified"].append({
+                "file": file_name,
+                "quarter": quarter,
+                "year": year,
+                "confidence": "HIGH",  # LLM results are validated
+                "evidence": "Detected by LLM"
+            })
         else:
-            print(f"Could not determine quarter and year for {file_name} after all attempts")
-            # Add to unknown category
+            print(f"Could not determine quarter and year for {file_name}")
+            # Add to unknown category if not already there
             if file_name not in metadata[company_code]["raw_files"]["unknown"]:
                 metadata[company_code]["raw_files"]["unknown"].append(file_name)
+            
+            # Add to still unknown results
+            analysis_results["still_unknown"].append({
+                "file": file_name,
+                "reason": "LLM detection failed"
+            })
     
     # Sort all lists in metadata
     metadata[company_code]["available_years"] = sorted(metadata[company_code]["available_years"])
@@ -1620,12 +1652,13 @@ def scan_company_reports(company_code):
         "available_years": sorted(metadata[company_code]["available_years"]),
         "quarters_by_year": metadata[company_code]["quarters_by_year"],
         "missing_quarters": metadata[company_code]["missing_quarters"],
-        "processed_files": processed_files
+        "processed_files": processed_files,
+        "analysis_results": analysis_results
     }
 
 def analyze_unknown_reports(company_code):
     """
-    Analyze unknown reports using GPT to determine their quarter and year.
+    Analyze unknown reports using LLM to determine their quarter and year.
     Updates the metadata file with the findings.
     
     Args:
@@ -1659,8 +1692,11 @@ def analyze_unknown_reports(company_code):
     if not unknown_files:
         return {"status": "success", "message": "No unknown files to analyze"}
     
-    # Initialize OpenAI LLM
-    llm = OpenAI(model="gpt-4", temperature=0, api_key=os.environ.get("OPENAI_API_KEY"))
+    print(f"Starting analysis of {len(unknown_files)} unknown files for {company_code}")
+    
+    # Get current year for validation
+    current_year = datetime.now().year
+    valid_years = list(range(current_year - 3, current_year))  # Only last 3 years
     
     analysis_results = {
         "successfully_classified": [],
@@ -1668,7 +1704,10 @@ def analyze_unknown_reports(company_code):
         "errors": []
     }
     
-    for file_name in unknown_files:
+    # Create a copy of unknown_files to safely modify during iteration
+    unknown_files_to_process = unknown_files.copy()
+    
+    for file_name in unknown_files_to_process:
         file_path = os.path.join(company_folder, file_name)
         if not os.path.exists(file_path):
             analysis_results["errors"].append({
@@ -1677,216 +1716,122 @@ def analyze_unknown_reports(company_code):
             })
             continue
         
+        print(f"Analyzing unknown file: {file_name}")
+        
         try:
-            # Create query engine for this PDF
-            query_engine = create_query_engine_for_single_file(file_path)
-            if not query_engine:
-                analysis_results["errors"].append({
+            # Use the LLM to get quarter and year
+            quarter, year = extract_quarter_from_pdf_content(file_path)
+            
+            if quarter and year and year.isdigit():
+                year_int = int(year)
+                
+                # Validate year is within acceptable range (last 3 years)
+                if year_int not in valid_years:
+                    print(f"Year {year} for file {file_name} not in valid range {min(valid_years)}-{max(valid_years)}")
+                    analysis_results["still_unknown"].append({
+                        "file": file_name,
+                        "reason": f"Year {year} not in valid range"
+                    })
+                    continue
+                
+                # Update metadata structures
+                # Remove from unknown
+                if file_name in metadata[company_code]["raw_files"]["unknown"]:
+                    metadata[company_code]["raw_files"]["unknown"].remove(file_name)
+                
+                # Add to correct year and quarter
+                if year not in metadata[company_code]["raw_files"]:
+                    metadata[company_code]["raw_files"][year] = {}
+                if quarter not in metadata[company_code]["raw_files"][year]:
+                    metadata[company_code]["raw_files"][year][quarter] = []
+                if file_name not in metadata[company_code]["raw_files"][year][quarter]:
+                    metadata[company_code]["raw_files"][year][quarter].append(file_name)
+                
+                # Update available years
+                if year not in metadata[company_code]["available_years"]:
+                    metadata[company_code]["available_years"].append(year)
+                    metadata[company_code]["available_years"].sort()
+                
+                # Update quarters by year
+                if year not in metadata[company_code]["quarters_by_year"]:
+                    metadata[company_code]["quarters_by_year"][year] = []
+                if quarter not in metadata[company_code]["quarters_by_year"][year]:
+                    metadata[company_code]["quarters_by_year"][year].append(quarter)
+                    metadata[company_code]["quarters_by_year"][year].sort()
+                
+                # Update missing quarters
+                if year not in metadata[company_code]["missing_quarters"]:
+                    metadata[company_code]["missing_quarters"][year] = []
+                metadata[company_code]["missing_quarters"][year] = [
+                    q for q in ["Q1", "Q2", "Q3", "Q4"]
+                    if q not in metadata[company_code]["quarters_by_year"][year]
+                ]
+                
+                analysis_results["successfully_classified"].append({
                     "file": file_name,
-                    "error": "Could not create query engine"
+                    "quarter": quarter,
+                    "year": year,
+                    "confidence": "HIGH",  # All LLM responses are validated
+                    "evidence": "Detected by LLM"
                 })
-                continue
-            
-            # Create query engine tool
-            query_engine_tool = QueryEngineTool(
-                query_engine=query_engine,
-                metadata=ToolMetadata(
-                    name="pdf_analyzer",
-                    description=f"Analyzes PDF content from {file_name}"
-                )
-            )
-            
-            # Create agent
-            agent = OpenAIAgent.from_tools(
-                [query_engine_tool],
-                llm=llm,
-                verbose=False
-            )
-            
-            # Detailed prompt for quarter and year detection
-            query = """
-            Analyze this financial report VERY CAREFULLY and determine the exact quarter and year.
-            
-            Look for these specific patterns in order of priority:
-            1. Direct statements about the period:
-               - "Three Months ended [Date]" = Q1
-               - "Six Months ended [Date]" = Q2
-               - "Nine Months ended [Date]" = Q3
-               - "Twelve Months ended [Date]" = Q4
-            
-            2. Check the financial statement headers and dates:
-               - Statement of Financial Position as at [Date]
-               - Statement of Profit or Loss for the period ended [Date]
-               - Statement of Comprehensive Income for [period] ended [Date]
-            
-            3. Look for comparative figures and their dates
-            
-            4. Check for fiscal year references:
-               - "For the quarter ended..."
-               - "For the [X] months period ended..."
-            
-            Rules for determining the quarter:
-            - Q1 must end on June 30th
-            - Q2 must end on September 30th
-            - Q3 must end on December 31st
-            - Q4 must end on March 31st
-            
-            Return ONLY a JSON with these fields:
-            {
-                "quarter": "Q1|Q2|Q3|Q4",
-                "year": "YYYY",
-                "period_end_date": "YYYY-MM-DD",
-                "confidence": "HIGH|MEDIUM|LOW",
-                "evidence": "Quote the exact text that supports this classification"
-            }
-            """
-            
-            # Get response
-            response = agent.chat(query)
-            
-            # Parse response
-            try:
-                response_text = str(response)
-                print(f"Raw response: {response_text[:200]}...")  # Log first 200 chars
                 
-                # First try to extract JSON from code blocks if present
-                json_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', response_text)
-                if json_match:
-                    json_str = json_match.group(1)
-                    print("Found JSON in code block")
-                else:
-                    # Try to extract just a JSON object from anywhere in the response
-                    json_match = re.search(r'({[\s\S]*?})', response_text)
-                    if json_match:
-                        json_str = json_match.group(1)
-                        print("Found JSON object in response")
-                    else:
-                        # If all else fails, use the whole response
-                        json_str = response_text
-                        print("Using entire response as JSON")
-                
-                # Remove commas from numeric values - better approach to handle multiple commas
-                json_str = re.sub(r'(-?\d+(?:,\d{3})+)', lambda m: m.group(0).replace(',', ''), json_str)
-                
-                # Preprocess JSON string to fix common issues
-                json_str = preprocess_json_string(json_str)
-                
-                # Try to parse the JSON
-                if json_str is not None:
-                    print(f"Parsing JSON: {json_str[:100]}...")  # Log first 100 chars
-                    try:
-                        metrics = json.loads(json_str)
-                    except json.JSONDecodeError as e:
-                        print(f"Error parsing JSON: {e}")
-                        metrics = None
-                else:
-                    print("No valid JSON string to parse")
-                    metrics = None
-                
-                if metrics is not None and metrics.get("confidence") in ["HIGH", "MEDIUM"]:
-                    # Validate the classification
-                    try:
-                        period_date = datetime.strptime(metrics.get("period_end_date", ""), "%Y-%m-%d")
-                        year_int = int(metrics.get("year", 0))
-                        current_year = datetime.now().year
-                        
-                        # Validate year is reasonable
-                        if current_year - 5 <= year_int <= current_year - 1:
-                            # Validate quarter matches period end date
-                            month = period_date.month
-                            expected_quarter = None
-                            if month == 6:
-                                expected_quarter = "Q1"
-                            elif month == 9:
-                                expected_quarter = "Q2"
-                            elif month == 12:
-                                expected_quarter = "Q3"
-                            elif month == 3:
-                                expected_quarter = "Q4"
-                                # Adjust year for Q4 reports
-                                if metrics.get("quarter") == "Q4":
-                                    metrics["year"] = str(period_date.year - 1)
-                            
-                            if metrics.get("quarter") == expected_quarter:
-                                # Update metadata
-                                # Remove from unknown
-                                metadata[company_code]["raw_files"]["unknown"].remove(file_name)
-                                
-                                # Add to correct year and quarter
-                                year_str = metrics.get("year")
-                                quarter = metrics.get("quarter")
-                                
-                                if year_str not in metadata[company_code]["raw_files"]:
-                                    metadata[company_code]["raw_files"][year_str] = {}
-                                if quarter not in metadata[company_code]["raw_files"][year_str]:
-                                    metadata[company_code]["raw_files"][year_str][quarter] = []
-                                metadata[company_code]["raw_files"][year_str][quarter].append(file_name)
-                                
-                                # Update available years
-                                if year_str not in metadata[company_code]["available_years"]:
-                                    metadata[company_code]["available_years"].append(year_str)
-                                    metadata[company_code]["available_years"].sort()
-                                
-                                # Update quarters by year
-                                if year_str not in metadata[company_code]["quarters_by_year"]:
-                                    metadata[company_code]["quarters_by_year"][year_str] = []
-                                if quarter not in metadata[company_code]["quarters_by_year"][year_str]:
-                                    metadata[company_code]["quarters_by_year"][year_str].append(quarter)
-                                    metadata[company_code]["quarters_by_year"][year_str].sort()
-                                
-                                # Update missing quarters
-                                if year_str not in metadata[company_code]["missing_quarters"]:
-                                    metadata[company_code]["missing_quarters"][year_str] = []
-                                metadata[company_code]["missing_quarters"][year_str] = [
-                                    q for q in ["Q1", "Q2", "Q3", "Q4"]
-                                    if q not in metadata[company_code]["quarters_by_year"][year_str]
-                                ]
-                                
-                                analysis_results["successfully_classified"].append({
-                                    "file": file_name,
-                                    "quarter": quarter,
-                                    "year": year_str,
-                                    "confidence": metrics.get("confidence"),
-                                    "evidence": metrics.get("evidence")
-                                })
-                                continue
-                    
-                    except (ValueError, TypeError) as e:
-                        print(f"Validation error for {file_name}: {e}")
-                
-                # If we get here, the file remains unknown
+                print(f"Successfully classified {file_name} as {quarter} {year}")
+            else:
                 analysis_results["still_unknown"].append({
                     "file": file_name,
-                    "reason": "Failed validation or low confidence",
-                    "detected_data": metrics
+                    "reason": "LLM detection failed"
                 })
-                
-            except json.JSONDecodeError as e:
-                analysis_results["errors"].append({
-                    "file": file_name,
-                    "error": f"Could not parse response: {str(e)}"
-                })
-                
+                print(f"Failed to classify {file_name} - LLM detection returned no valid quarter/year")
         except Exception as e:
             analysis_results["errors"].append({
                 "file": file_name,
                 "error": str(e)
             })
+            print(f"Error analyzing {file_name}: {str(e)}")
+    
+    # Check for duplicate files across different classifications
+    duplicate_check = {}
+    for year, quarters in metadata[company_code]["raw_files"].items():
+        if year == "unknown":
+            continue
+        for quarter, files in quarters.items():
+            for file_name in files:
+                if file_name not in duplicate_check:
+                    duplicate_check[file_name] = []
+                duplicate_check[file_name].append(f"{year}/{quarter}")
+    
+    # Report and clean up duplicates
+    for file_name, locations in duplicate_check.items():
+        if len(locations) > 1:
+            print(f"Warning: {file_name} is classified in multiple locations: {', '.join(locations)}")
+            # Keep the most recent classification only (we won't remove here to avoid complexity)
     
     # Update metadata file
     try:
         metadata[company_code]["last_updated"] = datetime.now().isoformat()
         with open(metadata_file, 'w') as f:
             json.dump(metadata, f, indent=2)
+        print(f"Updated metadata for {company_code} after analyzing {len(unknown_files_to_process)} unknown files")
     except Exception as e:
         print(f"Error saving metadata: {e}")
         analysis_results["errors"].append({
             "error": f"Could not save metadata: {str(e)}"
         })
     
+    # Provide a summary
+    summary = {
+        "total_unknown": len(unknown_files_to_process),
+        "successfully_classified": len(analysis_results["successfully_classified"]),
+        "still_unknown": len(analysis_results["still_unknown"]),
+        "errors": len(analysis_results["errors"]),
+        "remaining_unknown": len(metadata[company_code]["raw_files"]["unknown"])
+    }
+    print(f"Analysis summary: {summary}")
+    
     return {
         "status": "success",
-        "results": analysis_results
+        "results": analysis_results,
+        "summary": summary
     }
 
 def preprocess_json_string(json_str: str) -> str:

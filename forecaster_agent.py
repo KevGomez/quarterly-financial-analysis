@@ -26,20 +26,20 @@ load_dotenv()
 llm = OpenAI(model="gpt-4o", api_key=os.getenv("OPENAI_API_KEY"))
 
 # Example data for financial metrics (dummy data) - kept as fallback
-sample_data = {
-    "REXP.N0000": {
-        "revenue": [1250000, 1340000, 1420000, 1380000, 1460000, 1520000, 1580000, 1640000],
-        "net_income": [125000, 142000, 156000, 138000, 152000, 164000, 172000, 178000],
-        "net_profit": [125000, 142000, 156000, 138000, 152000, 164000, 172000, 178000],
-        "basic_eps": [10.2, 12.5, 13.6, 11.8, 12.9, 13.7, 14.5, 15.2]
-    },
-    "DIPD.N0000": {
-        "revenue": [850000, 920000, 980000, 1020000, 1080000, 1150000, 1210000, 1280000],
-        "net_income": [85000, 94000, 102000, 106000, 112000, 118000, 125000, 132000],
-        "net_profit": [85000, 94000, 102000, 106000, 112000, 118000, 125000, 132000],
-        "basic_eps": [7.1, 8.2, 8.7, 9.2, 9.5, 10.1, 10.8, 11.3]
-    }
-}
+# sample_data = {
+#     "REXP.N0000": {
+#         "revenue": [1250000, 1340000, 1420000, 1380000, 1460000, 1520000, 1580000, 1640000],
+#         "net_income": [125000, 142000, 156000, 138000, 152000, 164000, 172000, 178000],
+#         "net_profit": [125000, 142000, 156000, 138000, 152000, 164000, 172000, 178000],
+#         "basic_eps": [10.2, 12.5, 13.6, 11.8, 12.9, 13.7, 14.5, 15.2]
+#     },
+#     "DIPD.N0000": {
+#         "revenue": [850000, 920000, 980000, 1020000, 1080000, 1150000, 1210000, 1280000],
+#         "net_income": [85000, 94000, 102000, 106000, 112000, 118000, 125000, 132000],
+#         "net_profit": [85000, 94000, 102000, 106000, 112000, 118000, 125000, 132000],
+#         "basic_eps": [7.1, 8.2, 8.7, 9.2, 9.5, 10.1, 10.8, 11.3]
+#     }
+# }
 
 # Mapping of UI terms to JSON metric names
 METRIC_MAPPINGS = {
@@ -76,8 +76,8 @@ def get_financial_data(company: str, metric: str) -> List[float]:
     if not json_files:
         print(f"No JSON files found in {folder_name}. Using sample data as fallback.")
         # Fall back to sample data if no files found
-        if company in sample_data and metric in sample_data[company]:
-            return sample_data[company][metric]
+        # if company in sample_data and metric in sample_data[company]:
+        #     return sample_data[company][metric]
         return []
     
     # Load data from all JSON files
@@ -102,8 +102,8 @@ def get_financial_data(company: str, metric: str) -> List[float]:
     if not quarterly_data:
         print(f"No data for metric '{metric}' found in {folder_name}. Using sample data as fallback.")
         # Fall back to sample data if no metric data found
-        if company in sample_data and metric in sample_data[company]:
-            return sample_data[company][metric]
+        # if company in sample_data and metric in sample_data[company]:
+        #     return sample_data[company][metric]
         return []
     
     # Sort by year and quarter
