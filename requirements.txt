@@ -10,7 +10,6 @@ numpy>=1.23.0
 matplotlib>=3.7.0
 PyPDF2>=3.0.0
 openai>=1.9.0
-python-dotenv>=1.0.0
 
 # LLamaIndex and related
 llama-index>=0.10.0

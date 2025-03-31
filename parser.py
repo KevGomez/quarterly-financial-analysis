@@ -2,6 +2,7 @@ import os
 import json
 from datetime import datetime
 import re
+import streamlit as st
 from pathlib import Path
 from dotenv import load_dotenv
 from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Document
@@ -926,9 +927,8 @@ def process_company_reports():
     """Process all PDF reports for a company and extract financial metrics"""
     
     # Initialize OpenAI LLM
-    llm = OpenAI(model="gpt-4", temperature=0, api_key=os.environ.get("OPENAI_API_KEY"))
+    llm = OpenAI(model="gpt-4o", temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
     
-    llm = OpenAI(model="gpt-4o", temperature=0, api_key=os.environ.get("OPENAI_API_KEY"))
     
     # Create query engine for this company's reports
     query_engine_REXP = create_query_engine("REXP_Reports")
@@ -1019,7 +1019,7 @@ def verify_with_llm(pdf_path, detected_quarter, detected_year):
     
     try:
         # Initialize OpenAI LLM
-        llm = OpenAI(model="gpt-4", temperature=0, api_key=os.environ.get("OPENAI_API_KEY"))
+        llm = OpenAI(model="gpt-4", temperature=0, api_key=st.secrets["OPENAI_API_KEY"])
         
         # Create a query engine for this PDF
         query_engine = create_query_engine_for_single_file(pdf_path)

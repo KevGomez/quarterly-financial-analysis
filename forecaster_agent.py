@@ -5,6 +5,7 @@ from llama_index.llms.openai import OpenAI
 from llama_index.core.tools import FunctionTool
 import numpy as np
 import pandas as pd
+import streamlit as st
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from sklearn.linear_model import LinearRegression
@@ -23,7 +24,7 @@ warnings.filterwarnings('ignore')
 # Load environment variables
 load_dotenv()
 
-llm = OpenAI(model="gpt-4o", api_key=os.getenv("OPENAI_API_KEY"))
+llm = OpenAI(model="gpt-4o", api_key=st.secrets["OPENAI_API_KEY"])
 
 # Example data for financial metrics (dummy data) - kept as fallback
 # sample_data = {
